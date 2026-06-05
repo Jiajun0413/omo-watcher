@@ -29,9 +29,26 @@ interface FilePart {
   [key: string]: unknown;
 }
 
-// ── Helpers ──
+// ── Module-Level State ──
 
+/** O(1) hash→filePath lookup. Populated once per directory, then cache-only. */
+const hashCache = new Map<string, Map<string, string>>(); // dir → (hash → filePath)
+/** Directories that have been initialized (mkdir + .gitignore). */
+const initDirs = new Set<string>();
+
+// ── Pre-compiled Constants ──
+
+const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
 const IMG_EXT = /\.(png|jpe?g|gif|bmp|webp|svg|ico|tiff?|heic)$/i;
+const HASH_RE = /-([a-f0-9]{8})\./;
+
+const MIME_EXT: Record<string, string> = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+  'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
+  'image/tiff': '.tiff', 'image/heic': '.heic',
+};
+
+// ── Helpers ──
 
 function isImage(p: FilePart): boolean {
   if (p.type === 'image') return true;
@@ -45,16 +62,10 @@ function isImage(p: FilePart): boolean {
 }
 
 function decodeDataUrl(url: string): { mime: string; data: Buffer } | null {
-  const m = url.match(/^data:([^;]+);base64,(.+)$/);
+  const m = url.match(DATA_URL_RE);
   if (!m) return null;
   return { mime: m[1], data: Buffer.from(m[2], 'base64') };
 }
-
-const MIME_EXT: Record<string, string> = {
-  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
-  'image/webp': '.webp', 'image/svg+xml': '.svg', 'image/bmp': '.bmp',
-  'image/tiff': '.tiff', 'image/heic': '.heic',
-};
 
 function mimeToExt(mime: string): string {
   return MIME_EXT[mime] ?? '.png';
@@ -64,40 +75,72 @@ function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-// ── Cleanup ──
+// ── Lazy Init (O(1) after first call per workDir) ──
 
-let lastCleanup = 0;
-
-function cleanup(dir: string, maxAge: number, interval: number): void {
-  const now = Date.now();
-  if (now - lastCleanup < interval) return;
-  lastCleanup = now;
-  try {
-    for (const f of readdirSync(dir)) {
-      const fp = join(dir, f);
-      try { if (now - statSync(fp).mtimeMs > maxAge) unlinkSync(fp); } catch {}
-    }
-  } catch {}
+function ensureInit(workDir: string, saveDir: string): void {
+  if (initDirs.has(workDir)) return;
+  mkdirSync(saveDir, { recursive: true });
+  const giPath = join(workDir, '.opencode', '.gitignore');
+  if (!existsSync(giPath)) writeFileSync(giPath, '*\n');
+  initDirs.add(workDir);
 }
 
-// ── Save (content-hash dedup) ──
+// ── Hash Cache (one O(n) scan, then O(1) lookups) ──
 
-function save(dir: string, hash: string, name: string, data: Buffer): string | null {
-  // Dedup by content hash — skip if any file with this hash already exists
+function ensureHashCache(dir: string): void {
+  if (hashCache.has(dir)) return;
+  const cache = new Map<string, string>();
   try {
     for (const f of readdirSync(dir)) {
-      if (f.includes(hash)) return join(dir, f);
+      const m = f.match(HASH_RE);
+      if (m) cache.set(m[1], join(dir, f));
     }
   } catch {}
+  hashCache.set(dir, cache);
+}
+
+// ── Save (O(1) dedup via hash cache) ──
+
+function save(dir: string, hash: string, name: string, data: Buffer): string | null {
+  ensureHashCache(dir);
+  const cache = hashCache.get(dir)!;
+
+  // O(1) cache lookup
+  const cached = cache.get(hash);
+  if (cached) return cached;
 
   const fp = join(dir, name);
   try {
     writeFileSync(fp, data, { flag: 'wx' });
+    cache.set(hash, fp);
     return fp;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'EEXIST') return fp;
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+      cache.set(hash, fp);
+      return fp;
+    }
     return null;
   }
+}
+
+// ── Cleanup ──
+
+function cleanup(dir: string, maxAge: number): void {
+  const now = Date.now();
+  const cache = hashCache.get(dir);
+  try {
+    for (const f of readdirSync(dir)) {
+      const fp = join(dir, f);
+      try {
+        if (now - statSync(fp).mtimeMs > maxAge) {
+          unlinkSync(fp);
+          // Evict from cache
+          const m = f.match(HASH_RE);
+          if (m && cache) cache.delete(m[1]);
+        }
+      } catch {}
+    }
+  } catch {}
 }
 
 // ── Nudge ──
@@ -108,53 +151,63 @@ function nudge(paths: string[]): string {
 
 // ── Hook ──
 
-function processImages(msgs: MsgWithParts[], workDir: string, cfg: Required<WatcherConfig>): void {
-  const saveDir = join(workDir, '.opencode', 'images');
-  let hasImages = false;
-
+function processImages(msgs: MsgWithParts[], workDir: string, saveDir: string): void {
   for (const msg of msgs) {
     if (msg.info.role !== 'user') continue;
-    const imgParts = (msg.parts as FilePart[]).filter(isImage);
+
+    // Single-pass partition: separate image and non-image parts
+    const imgParts: FilePart[] = [];
+    const otherParts: Part[] = [];
+    for (const p of msg.parts) {
+      if (isImage(p as FilePart)) {
+        imgParts.push(p as FilePart);
+      } else {
+        otherParts.push(p);
+      }
+    }
     if (imgParts.length === 0) continue;
 
-    hasImages = true;
-    mkdirSync(saveDir, { recursive: true });
-
-    const giPath = join(workDir, '.opencode', '.gitignore');
-    if (!existsSync(giPath)) writeFileSync(giPath, '*\n');
+    ensureInit(workDir, saveDir);
 
     const saved: string[] = [];
     for (const p of imgParts) {
       const url = p.url as string | undefined;
       if (!url) continue;
       const dec = decodeDataUrl(url);
-      if (!dec) continue;
+      if (!dec) continue; // Non-data-url images: leave in otherParts
 
       const hash = createHash('sha1').update(dec.data).digest('hex').slice(0, 8);
       const rawName = (p.filename ?? p.name) as string | undefined;
-      const base = rawName ? sanitize(rawName).replace(/\.[^.]+$/, '') || 'image' : 'image';
-      const ext = rawName ? extname(sanitize(rawName)) || mimeToExt(dec.mime) : mimeToExt(dec.mime);
+      const sanitized = rawName ? sanitize(rawName) : '';
+      const base = sanitized ? sanitized.replace(/\.[^.]+$/, '') || 'image' : 'image';
+      const ext = sanitized ? extname(sanitized) || mimeToExt(dec.mime) : mimeToExt(dec.mime);
       const fileName = `${base}-${hash}${ext}`;
 
       const fp = save(saveDir, hash, fileName, dec.data);
       if (fp) saved.push(fp);
     }
 
-    msg.parts = msg.parts
-      .filter((p) => !isImage(p as FilePart))
-      .concat([{ type: 'text', text: nudge(saved) }] as Part[]);
+    // Only insert nudge if at least one image was saved
+    if (saved.length > 0) {
+      msg.parts = [...otherParts, { type: 'text', text: nudge(saved) } as Part];
+    }
+    // If no images were saved (all non-data-url), keep the original parts
   }
-
-  if (hasImages || existsSync(saveDir)) cleanup(saveDir, cfg.maxAgeMs, cfg.cleanupIntervalMs);
 }
 
 // ── Export ──
 
 export default (async (ctx: PluginInput, options?: WatcherConfig): Promise<Hooks> => {
   const cfg: Required<WatcherConfig> = { ...DEFAULTS, ...options };
+  const saveDir = join(ctx.directory, '.opencode', 'images');
+
+  // Timer-based cleanup (decoupled from message processing)
+  const timer = setInterval(() => cleanup(saveDir, cfg.maxAgeMs), cfg.cleanupIntervalMs);
+  timer.unref();
+
   return {
     'experimental.chat.messages.transform': async (_input, output) => {
-      processImages(output.messages, ctx.directory, cfg);
+      processImages(output.messages, ctx.directory, saveDir);
     },
   };
 }) satisfies Plugin;

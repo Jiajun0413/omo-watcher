@@ -33,11 +33,9 @@ In `~/.config/opencode/oh-my-openagent.jsonc` (or your project-level config):
 
   "agents": {
     "sisyphus": {
-      "prompt_append": "Pasted images save to .opencode/images/. Use look_at(file_path=<path>, goal=<intent>) to analyze — calls multimodal-looker. Never Read binary images."
-    },
+      "prompt_append": "Images in .opencode/images/ → use look_at(file_path). Never Read binary."
     "multimodal-looker": {
-      "prompt_append": "When given file_path via look_at, read the image from disk and analyze per goal."
-    }
+      "prompt_append": "Read image from disk, analyze per goal."
   }
 }
 ```
@@ -86,9 +84,8 @@ But if using a local path, options are not supported — edit `DEFAULTS` in `src
 User pastes image → plugin saves to .opencode/images/
                   → strips binary from message
                   → inserts nudge text
-                  → Sisyphus calls look_at(file_path, goal)
+                  → Sisyphus calls look_at(file_path)
                   → multimodal-looker reads & analyzes image
-```
 
 No observer delegation. No fallback paths. Just `look_at` → `multimodal-looker`.
 
