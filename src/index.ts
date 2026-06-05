@@ -7,9 +7,7 @@ import type { Message, Part } from '@opencode-ai/sdk';
 // ── Config ──
 
 interface WatcherConfig {
-  /** Max file age in ms before cleanup (default: 3600000 = 1h) */
   maxAgeMs?: number;
-  /** Cleanup interval in ms (default: 600000 = 10min) */
   cleanupIntervalMs?: number;
 }
 
@@ -82,9 +80,16 @@ function cleanup(dir: string, maxAge: number, interval: number): void {
   } catch {}
 }
 
-// ── Save ──
+// ── Save (content-hash dedup) ──
 
-function save(dir: string, name: string, data: Buffer): string | null {
+function save(dir: string, hash: string, name: string, data: Buffer): string | null {
+  // Dedup by content hash — skip if any file with this hash already exists
+  try {
+    for (const f of readdirSync(dir)) {
+      if (f.includes(hash)) return join(dir, f);
+    }
+  } catch {}
+
   const fp = join(dir, name);
   try {
     writeFileSync(fp, data, { flag: 'wx' });
@@ -98,8 +103,7 @@ function save(dir: string, name: string, data: Buffer): string | null {
 // ── Nudge ──
 
 function nudge(paths: string[]): string {
-  const first = paths[0] ?? '/path/to/image.png';
-  return `[Image saved: ${paths.join(', ')}. Use look_at(file_path="${first}", goal="describe & extract text") to analyze — it calls multimodal-looker internally. Do NOT use Read on images.]`;
+  return `[Image: ${paths[0] ?? 'saved'}]`;
 }
 
 // ── Hook ──
@@ -132,17 +136,16 @@ function processImages(msgs: MsgWithParts[], workDir: string, cfg: Required<Watc
       const ext = rawName ? extname(sanitize(rawName)) || mimeToExt(dec.mime) : mimeToExt(dec.mime);
       const fileName = `${base}-${hash}${ext}`;
 
-      const fp = save(saveDir, fileName, dec.data);
+      const fp = save(saveDir, hash, fileName, dec.data);
       if (fp) saved.push(fp);
     }
 
     msg.parts = msg.parts
       .filter((p) => !isImage(p as FilePart))
-      .concat([{ type: 'text', text: nudge(saved) }] as Part[])
+      .concat([{ type: 'text', text: nudge(saved) }] as Part[]);
   }
 
-  if (!hasImages && existsSync(saveDir)) cleanup(saveDir, cfg.maxAgeMs, cfg.cleanupIntervalMs);
-  if (hasImages) cleanup(saveDir, cfg.maxAgeMs, cfg.cleanupIntervalMs);
+  if (hasImages || existsSync(saveDir)) cleanup(saveDir, cfg.maxAgeMs, cfg.cleanupIntervalMs);
 }
 
 // ── Export ──
