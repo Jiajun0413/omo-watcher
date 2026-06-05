@@ -138,7 +138,7 @@ function processImages(msgs: MsgWithParts[], workDir: string, cfg: Required<Watc
 
     msg.parts = msg.parts
       .filter((p) => !isImage(p as FilePart))
-      .concat([{ type: 'text', text: nudge(saved) }]);
+      .concat([{ type: 'text', text: nudge(saved) }] as Part[])
   }
 
   if (!hasImages && existsSync(saveDir)) cleanup(saveDir, cfg.maxAgeMs, cfg.cleanupIntervalMs);

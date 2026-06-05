@@ -2,19 +2,20 @@
   "name": "omo-watcher",
   "version": "1.0.0",
   "description": "Image hook plugin for oh-my-openagent — saves pasted images to disk and nudges Sisyphus to use look_at for analysis",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
     "dev": "tsup src/index.ts --format esm --dts --watch"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^0.1.0",
-    "@opencode-ai/sdk": "^0.1.0"
+    "@opencode-ai/plugin": "*",
+    "@opencode-ai/sdk": "*"
   },
   "devDependencies": {
-    "tsup": "^8.0.0",
-    "typescript": "^5.5.0"
+    "@types/node": "*",
+    "tsup": "*",
+    "typescript": "*"
   },
   "keywords": ["opencode", "oh-my-openagent", "omo", "image-hook", "multimodal"],
   "license": "MIT"

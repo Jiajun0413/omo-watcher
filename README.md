@@ -1,6 +1,6 @@
 # omo-watcher
 
-Image hook plugin for [oh-my-openagent (omo)](https://github.com/code-yeongyu/oh-my-openagent).
+Image hook plugin for [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
 
 When a user pastes an image into chat, omo-watcher:
 1. Saves the image to `.opencode/images/` on disk
@@ -11,20 +11,25 @@ When a user pastes an image into chat, omo-watcher:
 
 ## Install
 
-Add to your `oh-my-openagent.jsonc` config:
+### 1. Clone & build
+
+```bash
+git clone https://github.com/Jiajun0413/omo-watcher.git
+cd omo-watcher
+bun install
+bun run build
+```
+
+### 2. Add to opencode config
+
+In `~/.config/opencode/oh-my-openagent.jsonc` (or your project-level config):
 
 ```jsonc
 {
-  "plugins": {
-    "omo-watcher": {
-      "source": "github:Jiajun0413/omo-watcher",
-      // Optional config:
-      // "options": {
-      //   "maxAgeMs": 3600000,        // 1h default
-      //   "cleanupIntervalMs": 600000  // 10min default
-      // }
-    }
-  },
+  "plugin": [
+    "oh-my-opencode-slim",
+    "/absolute/path/to/omo-watcher"
+  ],
 
   "agents": {
     "sisyphus": {
@@ -37,17 +42,38 @@ Add to your `oh-my-openagent.jsonc` config:
 }
 ```
 
+> **Note**: Use the **absolute path** to omo-watcher. Relative paths may not resolve correctly.
+
+### 3. Restart opencode
+
+```bash
+opencode
+```
+
 ## Uninstall
 
-Remove the `omo-watcher` entry from `plugins`, and the `prompt_append` lines from both `sisyphus` and `multimodal-looker` agents.
+Remove the omo-watcher path from the `plugin` array and the `prompt_append` lines from both `sisyphus` and `multimodal-looker` agents in your config.
 
-Also clean up saved images:
+Clean up saved images:
 
 ```bash
 rm -rf .opencode/images/
 ```
 
 ## Config Options
+
+Pass options as a tuple in the `plugin` array:
+
+```jsonc
+{
+  "plugin": [
+    "oh-my-opencode-slim",
+    ["omo-watcher", { "maxAgeMs": 3600000, "cleanupIntervalMs": 600000 }]
+  ]
+}
+```
+
+But if using a local path, options are not supported — edit `DEFAULTS` in `src/index.ts` instead.
 
 | Option | Default | Description |
 |---|---|---|
