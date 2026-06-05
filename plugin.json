@@ -1,0 +1,5 @@
+{
+  "name": "omo-watcher",
+  "description": "Detects pasted images in chat, saves them to disk, and nudges Sisyphus to use look_at for visual analysis",
+  "hooks": ["experimental.chat.messages.transform"]
+}
