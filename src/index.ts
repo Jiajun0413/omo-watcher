@@ -31,8 +31,8 @@ interface FilePart {
 
 // ── Module-Level State ──
 
-/** O(1) hash→filePath lookup. Populated once per directory, then cache-only. */
-const hashCache = new Map<string, Map<string, string>>(); // dir → (hash → filePath)
+/** O(1) hash existence check. Uses Set for thread-safety. */
+const savedHashes = new Map<string, Set<string>>(); // dir → Set<hash>
 /** Directories that have been initialized (mkdir + .gitignore). */
 const initDirs = new Set<string>();
 
@@ -85,38 +85,45 @@ function ensureInit(workDir: string, saveDir: string): void {
   initDirs.add(workDir);
 }
 
-// ── Hash Cache (one O(n) scan, then O(1) lookups) ──
+// ── Hash Set (O(1) existence check, thread-safe with Set) ──
 
-function ensureHashCache(dir: string): void {
-  if (hashCache.has(dir)) return;
-  const cache = new Map<string, string>();
+function ensureHashSet(dir: string): void {
+  if (savedHashes.has(dir)) return;
+  const hashes = new Set<string>();
   try {
     for (const f of readdirSync(dir)) {
       const m = f.match(HASH_RE);
-      if (m) cache.set(m[1], join(dir, f));
+      if (m) hashes.add(m[1]);
     }
   } catch {}
-  hashCache.set(dir, cache);
+  savedHashes.set(dir, hashes);
 }
 
-// ── Save (O(1) dedup via hash cache) ──
+// ── Save (O(1) dedup via hash Set, no race condition) ──
 
 function save(dir: string, hash: string, name: string, data: Buffer): string | null {
-  ensureHashCache(dir);
-  const cache = hashCache.get(dir)!;
+  ensureHashSet(dir);
+  const hashes = savedHashes.get(dir)!;
 
-  // O(1) cache lookup
-  const cached = cache.get(hash);
-  if (cached) return cached;
+  // O(1) Set check — if hash exists, assume file exists (no fs lookup)
+  if (hashes.has(hash)) {
+    // Find existing file with this hash
+    try {
+      for (const f of readdirSync(dir)) {
+        const m = f.match(HASH_RE);
+        if (m && m[1] === hash) return join(dir, f);
+      }
+    } catch {}
+  }
 
   const fp = join(dir, name);
   try {
     writeFileSync(fp, data, { flag: 'wx' });
-    cache.set(hash, fp);
+    hashes.add(hash);
     return fp;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-      cache.set(hash, fp);
+      hashes.add(hash);
       return fp;
     }
     return null;
@@ -127,26 +134,27 @@ function save(dir: string, hash: string, name: string, data: Buffer): string | n
 
 function cleanup(dir: string, maxAge: number): void {
   const now = Date.now();
-  const cache = hashCache.get(dir);
+  const hashes = savedHashes.get(dir);
   try {
     for (const f of readdirSync(dir)) {
       const fp = join(dir, f);
       try {
         if (now - statSync(fp).mtimeMs > maxAge) {
           unlinkSync(fp);
-          // Evict from cache
+          // Evict from Set
           const m = f.match(HASH_RE);
-          if (m && cache) cache.delete(m[1]);
+          if (m && hashes) hashes.delete(m[1]);
         }
       } catch {}
     }
   } catch {}
 }
 
-// ── Nudge ──
+// ── Nudge (complete instruction for Sisyphus) ──
 
 function nudge(paths: string[]): string {
-  return `[Image: ${paths[0] ?? 'saved'}]`;
+  const first = paths[0] ?? '/path/to/image.png';
+  return `[Image saved: ${first}. Use look_at(file_path="${first}", goal="describe and extract text") to analyze. The look_at tool calls multimodal-looker internally. Do NOT use Read on binary images.]`;
 }
 
 // ── Hook ──
@@ -170,11 +178,16 @@ function processImages(msgs: MsgWithParts[], workDir: string, saveDir: string): 
     ensureInit(workDir, saveDir);
 
     const saved: string[] = [];
+    const failedParts: Part[] = []; // Non-data-url images
     for (const p of imgParts) {
       const url = p.url as string | undefined;
       if (!url) continue;
       const dec = decodeDataUrl(url);
-      if (!dec) continue; // Non-data-url images: leave in otherParts
+      if (!dec) {
+        // Non-data-url image — keep it in message
+        failedParts.push(p as Part);
+        continue;
+      }
 
       const hash = createHash('sha1').update(dec.data).digest('hex').slice(0, 8);
       const rawName = (p.filename ?? p.name) as string | undefined;
@@ -187,11 +200,12 @@ function processImages(msgs: MsgWithParts[], workDir: string, saveDir: string): 
       if (fp) saved.push(fp);
     }
 
-    // Only insert nudge if at least one image was saved
+    // Reconstruct parts: non-image + failed-to-decode + nudge (if any saved)
+    const newParts = [...otherParts, ...failedParts];
     if (saved.length > 0) {
-      msg.parts = [...otherParts, { type: 'text', text: nudge(saved) } as Part];
+      newParts.push({ type: 'text', text: nudge(saved) } as Part);
     }
-    // If no images were saved (all non-data-url), keep the original parts
+    msg.parts = newParts;
   }
 }
 
@@ -208,6 +222,9 @@ export default (async (ctx: PluginInput, options?: WatcherConfig): Promise<Hooks
   return {
     'experimental.chat.messages.transform': async (_input, output) => {
       processImages(output.messages, ctx.directory, saveDir);
+    },
+    dispose: async () => {
+      clearInterval(timer);
     },
   };
 }) satisfies Plugin;

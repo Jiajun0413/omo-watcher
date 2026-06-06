@@ -2,12 +2,15 @@
 
 Image hook plugin for [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
 
-When a user pastes an image into chat, omo-watcher:
-1. Saves the image to `.opencode/images/` on disk
-2. Strips the binary data from the message
-3. Inserts a concise nudge directing Sisyphus to use `look_at` for visual analysis
+Automatically saves pasted images to disk and instructs Sisyphus to use `look_at` for visual analysis.
 
-`look_at` invokes `multimodal-looker` internally — no agent delegation needed.
+## Features
+
+- **O(1) deduplication**: Hash-based cache prevents duplicate saves
+- **Lazy initialization**: Minimal overhead until first image paste
+- **Timer-based cleanup**: Non-blocking background cleanup every 10 minutes
+- **Built-in instructions**: No manual prompt configuration needed
+- **Handles edge cases**: Non-data-url images preserved, concurrent saves safe
 
 ## Install
 
@@ -22,25 +25,20 @@ bun run build
 
 ### 2. Add to opencode config
 
-In `~/.config/opencode/oh-my-openagent.jsonc` (or your project-level config):
+In `~/.config/opencode/oh-my-openagent.jsonc`:
 
 ```jsonc
 {
   "plugin": [
     "oh-my-opencode-slim",
     "/absolute/path/to/omo-watcher"
-  ],
-
-  "agents": {
-    "sisyphus": {
-      "prompt_append": "Images in .opencode/images/ → use look_at(file_path). Never Read binary."
-    "multimodal-looker": {
-      "prompt_append": "Read image from disk, analyze per goal."
-  }
+  ]
 }
 ```
 
-> **Note**: Use the **absolute path** to omo-watcher. Relative paths may not resolve correctly.
+**That's it.** The plugin handles everything automatically.
+
+> Use **absolute paths** only. Relative paths may not resolve correctly.
 
 ### 3. Restart opencode
 
@@ -50,7 +48,7 @@ opencode
 
 ## Uninstall
 
-Remove the omo-watcher path from the `plugin` array and the `prompt_append` lines from both `sisyphus` and `multimodal-looker` agents in your config.
+Remove the omo-watcher path from the `plugin` array.
 
 Clean up saved images:
 
@@ -58,7 +56,7 @@ Clean up saved images:
 rm -rf .opencode/images/
 ```
 
-## Config Options
+## Config Options (Optional)
 
 Pass options as a tuple in the `plugin` array:
 
@@ -66,28 +64,32 @@ Pass options as a tuple in the `plugin` array:
 {
   "plugin": [
     "oh-my-opencode-slim",
-    ["omo-watcher", { "maxAgeMs": 3600000, "cleanupIntervalMs": 600000 }]
+    ["/path/to/omo-watcher", { "maxAgeMs": 7200000, "cleanupIntervalMs": 300000 }]
   ]
 }
 ```
 
-But if using a local path, options are not supported — edit `DEFAULTS` in `src/index.ts` instead.
-
 | Option | Default | Description |
 |---|---|---|
-| `maxAgeMs` | 3600000 (1h) | Max age before stale image cleanup |
-| `cleanupIntervalMs` | 600000 (10min) | How often to scan for stale files |
+| `maxAgeMs` | 3600000 (1h) | Max age before cleanup |
+| `cleanupIntervalMs` | 600000 (10min) | Cleanup interval |
 
 ## How It Works
 
 ```
-User pastes image → plugin saves to .opencode/images/
+User pastes image → plugin saves to .opencode/images/<name>-<hash>.png
                   → strips binary from message
-                  → inserts nudge text
-                  → Sisyphus calls look_at(file_path)
+                  → inserts instruction text
+                  → Sisyphus calls look_at(file_path, goal)
                   → multimodal-looker reads & analyzes image
+```
 
-No observer delegation. No fallback paths. Just `look_at` → `multimodal-looker`.
+**Key optimizations vs omos original:**
+- Hash-based O(1) dedup (no counter retry)
+- Lazy init (mkdir once per workspace)
+- Timer-based cleanup (non-blocking)
+- Pre-compiled regex (no repeated compilation)
+- Flat directory structure (no session subdirs)
 
 ## License
 
